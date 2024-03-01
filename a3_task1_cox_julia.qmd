@@ -1,0 +1,342 @@
+---
+title: "Assignment 3 Task 1 - ESM 244"
+author: "Julia S. Cox"
+format: 
+  html:
+    code-fold: show
+    toc: true
+    number-sections: true
+    embed-resources: true
+editor: visual
+execute: 
+  echo: true
+  message: false
+  warning: false
+---
+
+# Classifying Palmetto species using BLR
+
+Image
+
+## Overview 
+The data explored in this report concerns measurements and physical attributes of two species of Palmetto at the Archbold Biological Station in south-central Florida. Traits such as height, canopy length, canopy width, and number of green leaves were recorded for both Serenoa repens and Sabal etonia between 1981 and 2017. These Palmettos were also measured across different habitats, although we will not be considering habitat in this summary. The objective of this report is to use Binary Logistic Regression (BLR) to automatically classify these species based on their attributes, implement cross-validation and receiver operating characteristic (ROC) curves to select the best model, and to assess the success of the model. 
+
+The first section explores the data with plots to better understand how the different attributes may differ between the species. Then, two BLR models are compared and one is selected via cross-validation and ROC curve assessment. Finally, the model success is assessed and the percentage of correct classification for each species is reported. 
+
+### Data:
+Abrahamson, W.G. 2019. Survival, growth and biomass estimates of two dominant palmetto species of south-central Florida from 1981 - 2017, ongoing at 5-year intervals ver 1. Environmental Data Initiative. https://doi.org/10.6073/pasta/f2f96ec76fbbd4b9db431c79a770c4d5
+
+
+```{r setup}
+library(tidyverse)
+library(here)
+library(broom)
+library(ggplot2)
+library(readxl)
+library(lubridate)
+library(ggtext)
+library(patchwork)
+library(cowplot)
+library(tidymodels) 
+library(hrbrthemes)
+library(janitor)
+library(reshape2)
+```
+
+```{r data}
+palmetto_df <- read_csv(here("Data/palmetto.csv"))
+
+palmetto_df <- palmetto_df %>%
+  mutate(as.factor(species)) %>%
+  mutate(across('species', str_replace, '1', 's_repens')) %>%
+  mutate(across('species', str_replace, '2', 's_etonia')) %>%
+  mutate(s_repens = case_when(
+    endsWith(species, "s") ~ 1,
+    endsWith(species, "a") ~ 0)) %>%
+  mutate(as.numeric(height)) %>%
+  mutate(as.integer(height)) %>%
+  clean_names() 
+
+#remove infinite values 
+palmetto_clean <- palmetto_df[is.finite(palmetto_df$height),]
+palmetto_clean <- palmetto_df[is.finite(palmetto_df$length),]
+palmetto_clean <- palmetto_df[is.finite(palmetto_df$width),]
+palmetto_clean <- palmetto_df[is.finite(palmetto_df$green_lvs),]
+
+
+
+
+```
+
+## Plots
+Based on these exploratory plots, I would expect that canopy length and number of green leaves are the best predictive traits given the differences in means between Palmetto species. I would expect that tree height has the least predictive power out of these traits, given the similar mean height and distribution between the two species. 
+
+```{r}
+#height
+height <- ggplot(palmetto_clean, aes(height, fill = species)) +
+  geom_histogram(bins = 40, color="#e9ecef", 
+                 alpha=0.6, position = 'identity') +
+  scale_fill_manual(labels = c("S. etonia", "S. repens"), values=c("#404080", "#69b3a2")) +
+  xlab("Height") +
+  theme_ipsum() 
+
+#canopy length
+length <- ggplot(palmetto_clean, aes(length, fill = species)) +
+  geom_histogram(bins = 40, color="#e9ecef", 
+                 alpha=0.6, position = 'identity') +
+  scale_fill_manual(labels = c("S. etonia", "S. repens"), values=c("#404080", "#69b3a2")) +
+  xlab("Canopy length") +
+  theme_ipsum() 
+
+#canopy width 
+width <- ggplot(palmetto_clean, aes(width, fill = species)) +
+  geom_histogram(bins = 40, color="#e9ecef", 
+                 alpha=0.6, position = 'identity') +
+  scale_fill_manual(labels = c("S. etonia", "S. repens"), values=c("#404080", "#69b3a2")) +
+  xlab("Canopy width") +
+  theme_ipsum() 
+
+#green leaves 
+leaves <- ggplot(palmetto_clean, aes(green_lvs, fill = species)) +
+  geom_boxplot() +
+  scale_fill_manual(labels = c("S. etonia", "S. repens"), values=c("#404080", "#69b3a2")) +
+  xlab("Number of green leaves") +
+  theme_ipsum() 
+
+leaves <- leaves +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())
+
+# Find the means for each variable for the two species 
+height_mean_sr <- palmetto_clean %>% 
+  filter(species == "s_repens") %>%
+  summarize(mean_size = mean(height))
+
+height_mean_se <- palmetto_clean %>% 
+  filter(species == "s_etonia") %>%
+  summarize(mean_size = mean(height))
+
+length_mean_sr <- palmetto_clean %>% 
+  filter(species == "s_repens") %>%
+  summarize(mean_size = mean(length))
+
+length_mean_se <- palmetto_clean %>% 
+  filter(species == "s_etonia") %>%
+  summarize(mean_size = mean(length))
+
+width_mean_sr <- palmetto_clean %>% 
+  filter(species == "s_repens") %>%
+  summarize(mean_size = mean(width))
+
+width_mean_se <- palmetto_clean %>% 
+  filter(species == "s_etonia") %>%
+  summarize(mean_size = mean(width))
+
+# Add means to each histogram 
+height_plot <- height + geom_vline(xintercept = height_mean_sr$mean_size, color = "seagreen3") +
+  geom_vline(xintercept = height_mean_se$mean_size, color = "purple3") +
+  labs(tag = "B")
+
+length_plot <- length + geom_vline(xintercept = length_mean_sr$mean_size, color = "seagreen3") +
+  geom_vline(xintercept = length_mean_se$mean_size, color = "purple3") +
+  labs(tag = "C")
+
+width_plot <- width + geom_vline(xintercept = width_mean_sr$mean_size, color = "seagreen3") +
+  geom_vline(xintercept = width_mean_se$mean_size, color = "purple3") +
+  labs(tag = "A")
+
+```
+
+```{r fig.width=5, fig.height=10}
+#| label: fig1
+#| fig-cap: "Histograms of distributions of Palmetto attributes. Green and purple lines are means for S. repens and S. etonia, respectively. A: Canopy width histogram. B: Tree height histogram. C: Canopy length hisogram."
+#patchwork 
+width_plot/height_plot/length_plot
+
+
+```
+
+```{r fig.width=5, fig.height=3}
+#| label: fig2
+#| fig-cap: "Boxplot of number of green leaves on two Palmetto species."
+leaves
+```
+
+## BLR
+
+Use binary logistic regression to test feasibility of using variables plant height (height), canopy length (length), canopy width (width), and number of green leaves (green_lvs) to classify whether a palmetto is species Serenoa repens or Sabal etonia. We'll make two models and test their effectiveness.
+
+```{r}
+f1 <- s_repens ~ height + length + width + green_lvs
+f2 <- s_repens ~ height + width + green_lvs 
+
+blr1 <- glm(formula = f1, data = palmetto_df, family = binomial)
+blr2 <- glm(formula = f2, data = palmetto_df, family =binomial)
+
+summary(blr1)
+summary(blr2)
+```
+
+### Compare the two models using  cross-validation 
+Use repeated cross-validation (10-fold) using tidymodels package. I've selected blr1 as the best model. 
+```{r}
+#convert s_repens to factor
+palmetto_clean <- palmetto_clean %>%
+  mutate(s_repens = as.factor(s_repens))
+
+set.seed(123)
+
+s_repens_split <- initial_split(palmetto_clean, prop = 0.80, strata = s_repens)
+  ### stratified on `s_repens`
+s_repens_train_df <- training(s_repens_split)
+s_repens_test_df <- testing(s_repens_split)
+```
+
+
+```{r}
+set.seed(10000)
+palm_train_folds <- vfold_cv(s_repens_train_df, v = 10)
+palm_train_folds
+```
+
+
+Create a workflow
+```{r}
+s_repens_train_df <- s_repens_train_df %>%
+  mutate(s_repens = factor(s_repens))
+
+blr_mdl <- logistic_reg() %>%
+  set_engine('glm')
+
+
+blr1_fit <- blr_mdl %>%
+  fit(formula = f1, data = s_repens_train_df)
+
+blr2_fit <- blr_mdl %>%
+  fit(formula = f2, data = s_repens_train_df)
+
+```
+
+```{r}
+blr1_wf <- workflow() %>%  
+  add_model(blr_mdl) %>%
+  add_formula(f1)
+
+blr2_wf <- workflow() %>%  
+  add_model(blr_mdl) %>%
+  add_formula(f2)
+
+```
+
+Apply workflow to folding training set
+```{r}
+blr1_fit_folds <- blr1_wf %>%
+  fit_resamples(palm_train_folds)
+
+blr2_fit_folds <- blr2_wf %>%
+  fit_resamples(palm_train_folds)
+
+blr1_fit_folds
+blr2_fit_folds
+```
+
+
+```{r}
+collect_metrics(blr1_fit_folds)
+collect_metrics(blr2_fit_folds)
+```
+
+blr1 has higher mean accuracy and lower error than blr2, indicating that blr1 is a better model for predicting Palmetto species. I'll also look at ROC curves to support this decision.  
+
+### ROC
+Use a Receiver Operating Characteristic curve to evaluate the models:
+```{r}
+s_repens_predict1 <- s_repens_test_df %>%
+  mutate(predict(blr1_fit, new_data = s_repens_test_df)) %>%
+  mutate(predict(blr1_fit, new_data = ., type = 'prob'))
+
+s_repens_predict2 <- s_repens_test_df %>%
+  mutate(predict(blr2_fit, new_data = s_repens_test_df)) %>%
+  mutate(predict(blr2_fit, new_data = ., type = 'prob'))
+
+
+roc1_df <- roc_curve(s_repens_predict1, truth = s_repens, .pred_0)
+autoplot(roc1_df)
+
+roc2_df <- roc_curve(s_repens_predict2, truth = s_repens, .pred_0)
+autoplot(roc2_df)
+
+
+```
+It seems like the first model does a slightly better job at predicting whether a Palmetto is S. repens given the larger area under the curve. The AIC score is also lower for model 1, so I would say that this is the best model overall.  
+
+## Training the selected model 
+Split the data into portions for building and comparing models (80%) and for testing the models (20%)
+```{r}
+palmetto_clean %>%
+  group_by(s_repens) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  mutate(prop = n / sum(n))
+
+#convert s_repens to factor
+palmetto_clean <- palmetto_clean %>%
+  mutate(s_repens = as.factor(s_repens))
+
+#split into 80% and 20% 
+set.seed(123)
+s_repens_split <- initial_split(palmetto_clean, prop = 0.80, strata = s_repens)
+  ### stratified on `s_repens`
+s_repens_train_df <- training(s_repens_split)
+s_repens_test_df <- testing(s_repens_split)
+```
+
+
+```{r}
+blr1_fit
+```
+
+
+### BLR table
+```{r}
+blr1_tidy <- broom::tidy(blr1_fit)
+knitr::kable(blr1_tidy)
+```
+
+
+## How well does the above model predict if a Palmetto is S. repens? 
+We'll use our fitted model from the training set on the test set to see how the predictions compare.
+```{r}
+#using 50% probability threshold  
+s_repens_predict1 <- s_repens_test_df %>%
+  mutate(predict(blr1_fit, new_data = s_repens_test_df)) %>%
+  mutate(predict(blr1_fit, new_data = ., type = 'prob'))
+
+```
+
+
+```{r}
+df1 <- as.data.frame(table(s_repens_predict1 %>%
+        select(s_repens, .pred_class)))
+
+df1 <- df1 %>%
+  mutate(s_repens = as.numeric(s_repens)) %>%
+  mutate(.pred_class = as.numeric(.pred_class)) %>%
+  mutate(pred = (s_repens + .pred_class)) %>%
+  mutate(pred = as.character(pred)) %>%
+  mutate(Species = as.character(s_repens)) %>%
+  mutate(prediction = case_when(
+    endsWith(pred,"3") ~ "Failed",
+    endsWith(pred, "2") ~ "Succeeded",
+    endsWith(pred, "4") ~ "Succeeded")) %>%
+  mutate(Species = gsub("2","s_repens", Species)) %>%
+  mutate(Species = gsub("1","s_etonia", Species)) %>%
+  select(Freq, prediction, Species) %>% 
+  pivot_wider(names_from = prediction, values_from = Freq) %>%
+  mutate("% correctly classified" = Succeeded/(Succeeded + Failed)*100)
+
+knitr::kable(df1)
+
+```
+The model classified both species with a pretty high success rate, with less than 10% of trees incorrectly classified for each group. The model did a slightly better job classifying S. repens than it did S. etonia, but this model seems to be fairly balanced overall. 
